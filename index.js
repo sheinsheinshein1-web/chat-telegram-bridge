@@ -1,7 +1,13 @@
+process.on('uncaughtException', err => { console.error('[crash]', err); process.exit(1); });
+process.on('unhandledRejection', err => { console.error('[rejection]', err); process.exit(1); });
+
 require('dotenv').config();
 const http = require('http');
 const url = require('url');
 const axios = require('axios');
+
+console.log('[boot] NODE_ENV:', process.env.NODE_ENV);
+console.log('[boot] PORT env:', process.env.PORT);
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_CHAT_ID = String(process.env.ADMIN_CHAT_ID);
@@ -196,4 +202,5 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(404).end('not found');
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`Server started on port ${PORT}`));
+server.on('error', err => { console.error('[server error]', err); process.exit(1); });
+server.listen(PORT, '0.0.0.0', () => console.log(`[ready] Server listening on 0.0.0.0:${PORT}`));
