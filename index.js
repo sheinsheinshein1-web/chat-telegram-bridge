@@ -59,7 +59,7 @@ async function forwardToTelegram(sessionId, text) {
   const res = await axios.post(`${TG_API}/sendMessage`, {
     chat_id: ADMIN_CHAT_ID,
     text: `📩 [${sessionId}]\n${text}`,
-  });
+  }, { timeout: 10000 });
   return res.data.result.message_id;
 }
 
