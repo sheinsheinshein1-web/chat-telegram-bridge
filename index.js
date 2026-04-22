@@ -5,6 +5,8 @@ require('dotenv').config();
 const http = require('http');
 const url = require('url');
 const axios = require('axios');
+const dns = require('dns');
+dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
 
 console.log('[boot] NODE_ENV:', process.env.NODE_ENV);
 console.log('[boot] PORT env:', process.env.PORT);
