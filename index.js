@@ -97,6 +97,19 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /ping-telegram — тест сетевой связности с Telegram изнутри контейнера
+  if (pathname === '/ping-telegram' && req.method === 'GET') {
+    try {
+      const result = await axios.get(`${TG_API}/getMe`, { timeout: 10000 });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, bot: result.data.result }));
+    } catch (err) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: err.message, code: err.code }));
+    }
+    return;
+  }
+
   // GET /listen?session=ID — SSE stream
   if (pathname === '/listen' && req.method === 'GET') {
     const sessionId = rawQuery.session;
