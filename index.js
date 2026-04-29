@@ -56,11 +56,20 @@ setInterval(() => {
 }, 60 * 60 * 1000);
 
 async function forwardToTelegram(sessionId, text) {
-  const res = await axios.post(`${TG_API}/sendMessage`, {
-    chat_id: ADMIN_CHAT_ID,
-    text: `📩 [${sessionId}]\n${text}`,
-  }, { timeout: 10000 });
-  return res.data.result.message_id;
+  const body = { chat_id: ADMIN_CHAT_ID, text: `📩 [${sessionId}]\n${text}` };
+  const delays = [0, 2000, 5000]; // 3 попытки: сразу, через 2с, через 5с
+  let lastErr;
+  for (const delay of delays) {
+    if (delay) await new Promise(r => setTimeout(r, delay));
+    try {
+      const res = await axios.post(`${TG_API}/sendMessage`, body, { timeout: 10000 });
+      return res.data.result.message_id;
+    } catch (err) {
+      lastErr = err;
+      console.error(`[telegram] попытка не удалась, задержка ${delay}ms:`, err.message);
+    }
+  }
+  throw lastErr;
 }
 
 function setCors(res) {
