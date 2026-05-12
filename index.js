@@ -12,10 +12,12 @@ console.log('[boot] NODE_ENV:', process.env.NODE_ENV);
 console.log('[boot] PORT env:', process.env.PORT);
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const ADMIN_CHAT_ID = String(process.env.ADMIN_CHAT_ID);
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID || '';
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ADMIN_CHAT_ID;
 const PORT = process.env.PORT || 3000;
 const TG_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const TELEGRAM_TIMEOUT_MS = Number(process.env.TELEGRAM_TIMEOUT_MS || 10000);
+const ENABLE_TELEGRAM = process.env.ENABLE_TELEGRAM === 'true';
 
 const telegramAgent = new https.Agent({
   family: 4,
@@ -34,6 +36,7 @@ const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
 
 // sessionId -> { messages: [], lastActivity: number, res: ServerResponse|null }
 const sessions = new Map();
+const adminStreams = new Set();
 // Telegram message_id -> sessionId (for routing replies)
 const msgToSession = new Map();
 
@@ -52,6 +55,49 @@ function storeMessage(sessionId, msg) {
 
 function sendSSE(res, data) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function getLastMessage(messages) {
+  return messages.length ? messages[messages.length - 1] : null;
+}
+
+function getSessionSummaries() {
+  return [...sessions.entries()]
+    .map(([id, session]) => ({
+      id,
+      lastActivity: session.lastActivity,
+      lastMessage: getLastMessage(session.messages),
+      messages: session.messages,
+      unread: session.messages.filter(msg => msg.from === 'client' && !msg.seenByAdmin).length,
+    }))
+    .sort((a, b) => b.lastActivity - a.lastActivity);
+}
+
+function notifyAdmins(data) {
+  const payload = `data: ${JSON.stringify(data)}\n\n`;
+  for (const stream of adminStreams) {
+    if (stream.writableEnded) {
+      adminStreams.delete(stream);
+      continue;
+    }
+    stream.write(payload);
+  }
+}
+
+function isAdminRequest(req, parsedUrl) {
+  if (!ADMIN_TOKEN) return true;
+  const token =
+    req.headers['x-admin-token'] ||
+    parsedUrl.searchParams.get('token') ||
+    '';
+  return token === ADMIN_TOKEN;
+}
+
+function requireAdmin(req, res, parsedUrl) {
+  if (isAdminRequest(req, parsedUrl)) return true;
+  res.writeHead(401, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+  return false;
 }
 
 // Purge sessions older than 7 days, keep msgToSession bounded
@@ -104,6 +150,7 @@ function readBody(req) {
 }
 
 function forwardToTelegramInBackground(sessionId, text) {
+  if (!ENABLE_TELEGRAM || !BOT_TOKEN || !ADMIN_CHAT_ID) return;
   forwardToTelegram(sessionId, text)
     .then(tgMsgId => {
       msgToSession.set(tgMsgId, sessionId);
@@ -128,6 +175,79 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/health' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, sessions: sessions.size }));
+    return;
+  }
+
+  // GET /admin/sessions — operator inbox snapshot
+  if (pathname === '/admin/sessions' && req.method === 'GET') {
+    if (!requireAdmin(req, res, parsedUrl)) return;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, sessions: getSessionSummaries() }));
+    return;
+  }
+
+  // GET /admin/listen — operator SSE stream for all chat updates
+  if (pathname === '/admin/listen' && req.method === 'GET') {
+    if (!requireAdmin(req, res, parsedUrl)) return;
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    adminStreams.add(res);
+    sendSSE(res, { type: 'sessions', sessions: getSessionSummaries() });
+
+    const heartbeat = setInterval(() => {
+      if (res.writableEnded) { clearInterval(heartbeat); return; }
+      res.write(': ping\n\n');
+    }, 25000);
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      adminStreams.delete(res);
+    });
+
+    return;
+  }
+
+  // POST /admin/reply — operator replies to a client session
+  if (pathname === '/admin/reply' && req.method === 'POST') {
+    if (!requireAdmin(req, res, parsedUrl)) return;
+
+    try {
+      const body = await readBody(req);
+      const { session: sessionId, text } = body;
+
+      if (!sessionId || !text?.trim()) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'session and text required' }));
+        return;
+      }
+
+      const session = getSession(sessionId);
+      const reply = { from: 'admin', text: text.trim(), timestamp: Date.now() };
+      session.messages.forEach(msg => {
+        if (msg.from === 'client') msg.seenByAdmin = true;
+      });
+      storeMessage(sessionId, reply);
+
+      if (session.res && !session.res.writableEnded) {
+        sendSSE(session.res, reply);
+      }
+
+      notifyAdmins({ type: 'sessions', sessions: getSessionSummaries() });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (err) {
+      console.error('[/admin/reply]', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: err.message }));
+    }
     return;
   }
 
@@ -203,6 +323,7 @@ const server = http.createServer(async (req, res) => {
 
       const clientMsg = { from: 'client', text: text.trim(), timestamp: Date.now() };
       storeMessage(sessionId, clientMsg);
+      notifyAdmins({ type: 'sessions', sessions: getSessionSummaries(), activeSession: sessionId });
 
       forwardToTelegramInBackground(sessionId, text.trim());
 
