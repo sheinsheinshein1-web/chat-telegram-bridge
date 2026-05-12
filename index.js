@@ -13,7 +13,7 @@ console.log('[boot] PORT env:', process.env.PORT);
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID || '';
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ADMIN_CHAT_ID;
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const PORT = process.env.PORT || 3000;
 const TG_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const TELEGRAM_TIMEOUT_MS = Number(process.env.TELEGRAM_TIMEOUT_MS || 10000);
@@ -85,12 +85,13 @@ function notifyAdmins(data) {
 }
 
 function isAdminRequest(req, parsedUrl) {
-  if (!ADMIN_TOKEN) return true;
+  const allowedTokens = [ADMIN_TOKEN, ADMIN_CHAT_ID].filter(Boolean);
+  if (allowedTokens.length === 0) return true;
   const token =
     req.headers['x-admin-token'] ||
     parsedUrl.searchParams.get('token') ||
     '';
-  return token === ADMIN_TOKEN;
+  return allowedTokens.includes(token);
 }
 
 function requireAdmin(req, res, parsedUrl) {
