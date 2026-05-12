@@ -308,10 +308,10 @@ const server = http.createServer(async (req, res) => {
         sendSSE(session.res, reply);
       }
 
-      notifyAdmins({ type: 'sessions', sessions: getSessionSummaries() });
+      notifyAdmins({ type: 'sessions', sessions: getSessionSummaries(), activeSession: sessionId });
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
+      res.end(JSON.stringify({ ok: true, reply }));
     } catch (err) {
       console.error('[/admin/reply]', err.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
