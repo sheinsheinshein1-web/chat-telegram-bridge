@@ -15,7 +15,7 @@ console.log('[boot] PORT env:', process.env.PORT);
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_CHAT_ID = (process.env.ADMIN_CHAT_ID || '').trim();
-const ADMIN_TOKEN = (process.env.ADMIN_TOKEN || '').trim();
+const ADMIN_TOKEN = (process.env.ADMIN_TOKEN || 'MM_OPERATOR_2026_7QK9').trim();
 const PORT = process.env.PORT || 3000;
 const TG_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const TELEGRAM_TIMEOUT_MS = Number(process.env.TELEGRAM_TIMEOUT_MS || 10000);
