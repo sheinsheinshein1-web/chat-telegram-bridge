@@ -4,6 +4,8 @@ process.on('unhandledRejection', err => { console.error('[rejection]', err); pro
 require('dotenv').config();
 const http = require('http');
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
 const axios = require('axios');
 const dns = require('dns');
 dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
@@ -18,6 +20,7 @@ const PORT = process.env.PORT || 3000;
 const TG_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const TELEGRAM_TIMEOUT_MS = Number(process.env.TELEGRAM_TIMEOUT_MS || 10000);
 const ENABLE_TELEGRAM = process.env.ENABLE_TELEGRAM === 'true';
+const STORAGE_FILE = process.env.STORAGE_FILE || path.join(__dirname, 'chat-sessions.json');
 
 const telegramAgent = new https.Agent({
   family: 4,
@@ -40,6 +43,57 @@ const adminStreams = new Set();
 // Telegram message_id -> sessionId (for routing replies)
 const msgToSession = new Map();
 
+let saveTimer = null;
+
+function serializeSessions() {
+  return [...sessions.entries()].map(([id, session]) => ({
+    id,
+    messages: session.messages,
+    lastActivity: session.lastActivity,
+  }));
+}
+
+function saveSessionsNow() {
+  try {
+    const payload = {
+      savedAt: Date.now(),
+      sessions: serializeSessions(),
+    };
+    fs.writeFileSync(STORAGE_FILE, JSON.stringify(payload, null, 2));
+  } catch (err) {
+    console.error('[storage] save failed:', err.message);
+  }
+}
+
+function scheduleSaveSessions() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    saveSessionsNow();
+  }, 500);
+}
+
+function loadSessions() {
+  try {
+    if (!fs.existsSync(STORAGE_FILE)) return;
+    const data = JSON.parse(fs.readFileSync(STORAGE_FILE, 'utf8'));
+    const cutoff = Date.now() - SEVEN_DAYS;
+
+    for (const item of data.sessions || []) {
+      if (!item.id || item.lastActivity < cutoff) continue;
+      sessions.set(item.id, {
+        messages: Array.isArray(item.messages) ? item.messages : [],
+        lastActivity: item.lastActivity || Date.now(),
+        res: null,
+      });
+    }
+
+    console.log(`[storage] loaded ${sessions.size} sessions`);
+  } catch (err) {
+    console.error('[storage] load failed:', err.message);
+  }
+}
+
 function getSession(sessionId) {
   if (!sessions.has(sessionId)) {
     sessions.set(sessionId, { messages: [], lastActivity: Date.now(), res: null });
@@ -51,6 +105,7 @@ function storeMessage(sessionId, msg) {
   const session = getSession(sessionId);
   session.messages.push(msg);
   session.lastActivity = Date.now();
+  scheduleSaveSessions();
 }
 
 function sendSSE(res, data) {
@@ -108,6 +163,7 @@ setInterval(() => {
     if (session.lastActivity < cutoff) {
       if (session.res) session.res.end();
       sessions.delete(id);
+      scheduleSaveSessions();
     }
   }
   if (msgToSession.size > 20000) {
@@ -234,6 +290,7 @@ const server = http.createServer(async (req, res) => {
       session.messages.forEach(msg => {
         if (msg.from === 'client') msg.seenByAdmin = true;
       });
+      scheduleSaveSessions();
       storeMessage(sessionId, reply);
 
       if (session.res && !session.res.writableEnded) {
@@ -371,6 +428,8 @@ const server = http.createServer(async (req, res) => {
 
   res.writeHead(404).end('not found');
 });
+
+loadSessions();
 
 server.on('error', err => { console.error('[server error]', err); process.exit(1); });
 server.listen(PORT, '0.0.0.0', () => console.log(`[ready] Server listening on 0.0.0.0:${PORT}`));
