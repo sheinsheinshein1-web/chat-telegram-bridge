@@ -3,7 +3,7 @@ process.on('unhandledRejection', err => { console.error('[rejection]', err); pro
 
 require('dotenv').config();
 const http = require('http');
-const url = require('url');
+const https = require('https');
 const axios = require('axios');
 const dns = require('dns');
 dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
@@ -15,6 +15,20 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_CHAT_ID = String(process.env.ADMIN_CHAT_ID);
 const PORT = process.env.PORT || 3000;
 const TG_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
+const TELEGRAM_TIMEOUT_MS = Number(process.env.TELEGRAM_TIMEOUT_MS || 10000);
+
+const telegramAgent = new https.Agent({
+  family: 4,
+  lookup(hostname, options, callback) {
+    dns.lookup(hostname, { ...options, family: 4, all: false }, callback);
+  },
+});
+
+const telegramClient = axios.create({
+  baseURL: TG_API,
+  timeout: TELEGRAM_TIMEOUT_MS,
+  httpsAgent: telegramAgent,
+});
 
 const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
 
@@ -62,7 +76,7 @@ async function forwardToTelegram(sessionId, text) {
   for (const delay of delays) {
     if (delay) await new Promise(r => setTimeout(r, delay));
     try {
-      const res = await axios.post(`${TG_API}/sendMessage`, body, { timeout: 10000 });
+      const res = await telegramClient.post('/sendMessage', body);
       return res.data.result.message_id;
     } catch (err) {
       lastErr = err;
@@ -89,6 +103,16 @@ function readBody(req) {
   });
 }
 
+function forwardToTelegramInBackground(sessionId, text) {
+  forwardToTelegram(sessionId, text)
+    .then(tgMsgId => {
+      msgToSession.set(tgMsgId, sessionId);
+    })
+    .catch(err => {
+      console.error('[/send async]', err.message);
+    });
+}
+
 const server = http.createServer(async (req, res) => {
   setCors(res);
 
@@ -97,7 +121,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const { pathname, query: rawQuery } = url.parse(req.url, true);
+  const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const pathname = parsedUrl.pathname;
 
   // GET /health
   if (pathname === '/health' && req.method === 'GET') {
@@ -109,7 +134,7 @@ const server = http.createServer(async (req, res) => {
   // GET /ping-telegram — тест сетевой связности с Telegram изнутри контейнера
   if (pathname === '/ping-telegram' && req.method === 'GET') {
     try {
-      const result = await axios.get(`${TG_API}/getMe`, { timeout: 10000 });
+      const result = await telegramClient.get('/getMe');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, bot: result.data.result }));
     } catch (err) {
@@ -121,7 +146,7 @@ const server = http.createServer(async (req, res) => {
 
   // GET /listen?session=ID — SSE stream
   if (pathname === '/listen' && req.method === 'GET') {
-    const sessionId = rawQuery.session;
+    const sessionId = parsedUrl.searchParams.get('session');
     if (!sessionId) {
       res.writeHead(400).end('session required');
       return;
@@ -179,11 +204,10 @@ const server = http.createServer(async (req, res) => {
       const clientMsg = { from: 'client', text: text.trim(), timestamp: Date.now() };
       storeMessage(sessionId, clientMsg);
 
-      const tgMsgId = await forwardToTelegram(sessionId, text.trim());
-      msgToSession.set(tgMsgId, sessionId);
+      forwardToTelegramInBackground(sessionId, text.trim());
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, queued: true }));
     } catch (err) {
       console.error('[/send]', err.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
